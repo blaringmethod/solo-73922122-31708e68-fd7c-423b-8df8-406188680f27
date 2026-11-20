@@ -12,6 +12,7 @@ services:
     volumes:
       - ./sql:/sql:ro
       - ./sql/01_source_init.sql:/docker-entrypoint-initdb.d/01_source_init.sql:ro
+      - ./sql/02_demo_registry_report.sql:/docker-entrypoint-initdb.d/02_demo_registry_report.sql:ro
       - source_pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d appdb"]

@@ -128,6 +128,25 @@ class GenerateRequest(BaseModel):
         return [t.table for t in self.tables]
 
 
+class MigrationRequest(BaseModel):
+    """Two succeeded jobs: the old and the new sample package."""
+
+    old_job_id: str
+    new_job_id: str
+
+
+class MigrationResult(BaseModel):
+    old_job_id: str
+    new_job_id: str
+    schema_name: str
+    registry_table: str
+    report_table: str
+    # INSERT/UPDATE/DELETE counts rendered into the old -> new branch.
+    changes: dict[str, dict[str, int]]
+    script: str
+    verify_log: list[str] = Field(default_factory=list)
+
+
 class Rejection(BaseModel):
     object: str
     reason: str

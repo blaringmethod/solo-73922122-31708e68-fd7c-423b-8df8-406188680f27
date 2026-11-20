@@ -1,0 +1,24 @@
+{
+  "_comment": "旧版样本：登记表/报告表基线数据（提交 POST /jobs 前可删除本字段）",
+  "schema_name": "public",
+  "tables": [
+    {
+      "table": "dw_registry",
+      "rows": 4,
+      "ranges": {
+        "reg_id":      {"low": 100, "high": 199},
+        "region_code": {"low": 1,   "high": 9},
+        "load_batch":  {"low": 1000, "high": 1999}
+      }
+    },
+    {
+      "table": "dw_report",
+      "rows": 4,
+      "ranges": {
+        "report_id": {"low": 5000, "high": 5999},
+        "reg_id":    {"low": 100,  "high": 199},
+        "metric":    {"low": 1,    "high": 100}
+      }
+    }
+  ]
+}

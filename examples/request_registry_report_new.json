@@ -1,0 +1,24 @@
+{
+  "_comment": "新版样本：与旧版同结构、不同数据（存在增/删/改行），用于 POST /migrations",
+  "schema_name": "public",
+  "tables": [
+    {
+      "table": "dw_registry",
+      "rows": 5,
+      "ranges": {
+        "reg_id":      {"low": 100, "high": 299},
+        "region_code": {"low": 1,   "high": 9},
+        "load_batch":  {"low": 2000, "high": 2999}
+      }
+    },
+    {
+      "table": "dw_report",
+      "rows": 5,
+      "ranges": {
+        "report_id": {"low": 6000, "high": 6999},
+        "reg_id":    {"low": 100,  "high": 299},
+        "metric":    {"low": 101,  "high": 200}
+      }
+    }
+  ]
+}

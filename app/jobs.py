@@ -32,6 +32,9 @@ class JobStore:
     def __init__(self) -> None:
         self._jobs: dict[str, JobResult] = {}
         self._packages: dict[str, dict[str, str]] = {}
+        # Structured artifacts kept alongside each published package so the
+        # migration API can diff two succeeded jobs without parsing SQL.
+        self._artifacts: dict[str, dict] = {}
         self._lock = threading.Lock()
 
     def create(self) -> str:
@@ -66,6 +69,13 @@ class JobStore:
         with self._lock:
             self._packages[job_id] = package
 
+    def publish_artifacts(self, job_id: str, artifacts: dict) -> None:
+        with self._lock:
+            self._artifacts[job_id] = artifacts
+
+    def artifacts(self, job_id: str) -> dict | None:
+        return self._artifacts.get(job_id)
+
     def purge_expired(self) -> None:
         now = time.time()
         with self._lock:
@@ -78,6 +88,7 @@ class JobStore:
             for jid in stale:
                 self._jobs.pop(jid, None)
                 self._packages.pop(jid, None)
+                self._artifacts.pop(jid, None)
 
 
 STORE = JobStore()
@@ -276,6 +287,15 @@ def run_job(job_id: str, req: GenerateRequest) -> None:
 
         # Only now is the package stored and downloadable.
         store.publish(job_id, package)
+        store.publish_artifacts(
+            job_id,
+            {
+                "schema_name": req.schema_name,
+                "selected": list(selected),
+                "schemas": {t: schemas[t] for t in selected},
+                "data": {t: [dict(r) for r in data[t]] for t in selected},
+            },
+        )
         store.append_log(job_id, "package verified and published")
         store.update(job_id, status=JobStatus.SUCCEEDED)
     except Exception as exc:  # defensive: never leave a job dangling

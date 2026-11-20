@@ -53,6 +53,7 @@ docker compose up --build
 | POST | `/jobs` | 提交生成+验证作业（后台执行），返回 `job_id` |
 | GET | `/jobs/{job_id}` | 状态、无解冲突报告、逐步日志 |
 | GET | `/jobs/{job_id}/download` | 仅在验证成功后下载 zip（含 5 个文件） |
+| POST | `/migrations` | 输入两个成功作业号，返回验证过的单事务增量迁移脚本 |
 
 ### 请求体
 
@@ -98,6 +99,68 @@ psql "$EMPTY_DATABASE_DSN" -v ON_ERROR_STOP=1 \
   -f 01_schema.sql -f 02_data.sql -f 03_constraints.sql
 ```
 
+## 增量装载回归：就地旧版 → 新版迁移（`POST /migrations`）
+
+数仓做增量装载回归时，已经装好旧样本的库需要就地更新到新版。本服务在不触碰源库、
+不读取任何用户行的前提下，用两个**验证成功**的作业号生成一份 PostgreSQL 迁移脚本。
+
+### 明确支持的结构（其余一律 422 拒绝）
+
+- 恰好两张表：一张**登记表**、一张**报告表**；
+- 每张表只有**单列整数主键**（smallint/integer/bigint），没有其他 UNIQUE/主键约束；
+- 报告表对登记表恰好有**一条**外键：单列、**可空**、**NOT DEFERRABLE**、
+  **ON DELETE NO ACTION**，引用登记表主键；两表没有其他外键；
+- 两个作业的结构必须逐列一致（列名、类型、顺序、可空性、主键与外键定义）。
+
+### 请求与响应
+
+```json
+POST /migrations
+{ "old_job_id": "…旧版成功作业…", "new_job_id": "…新版成功作业…" }
+```
+
+响应含 `registry_table` / `report_table`、每表 `insert/update/delete` 计数、
+完整 `script` 以及隔离库 `verify_log`。作业号相同 422、作业不存在 404、
+作业未成功 409、结构不合规 422、隔离库验证失败 409（不交付任何脚本）。
+
+### 脚本的事务与并发语义
+
+脚本是**单事务**（`BEGIN … COMMIT`），核心保证：
+
+1. 事务开头对两张表加 `SHARE ROW EXCLUSIVE` 锁并设置 `lock_timeout`/
+   `statement_timeout`：该锁与所有行写锁冲突，**并发 INSERT/UPDATE/DELETE 无法插入
+   到核对与更新之间**，只能在事务提交后排队执行或因锁超时失败；
+2. 在同一事务内把旧版、新版的完整快照装入 TEMP 表，对两张表用双向
+   `EXCEPT ALL` 做**全量数据核对**（每一列、每一行，含 NULL 语义）；
+3. 已是新版 → 成功且**不写入**（仅 NOTICE）；与旧版完全一致 → 执行渲染好的
+   增删改；两版都不匹配 → `RAISE EXCEPTION` **整笔回滚拒绝**；
+4. **外键检查全程开启**，不关闭触发器、不改可延迟性。DML 按
+   报告 UPDATE → 登记 INSERT → 登记 UPDATE → 报告 INSERT → 报告 DELETE →
+   登记 DELETE 的顺序排列，保证 NOT DEFERRABLE NO ACTION 外键在每条语句都满足
+   （先释放子表引用，最后才能删除被引用的父行）；
+5. 变更后再次双向 `EXCEPT ALL` 核对，结果不等于新版则同样整笔回滚。
+
+### 交付前的隔离库验证（不通过不返回脚本）
+
+`app/migverify.py` 在验证集群上新建三个互不复用的隔离空库：
+
+| 场景 | 准备 | 期望 |
+| --- | --- | --- |
+| upgrade | 装入**旧包**后执行脚本 | 两表逐表逐行等于新版；外键负向探测 23503 生效 |
+| already-new | 装入**新包**后执行脚本 | 成功且字节级无写入 |
+| neither | 旧包基础上把可空外键列改成 NULL（第三态） | 脚本整笔拒绝（23000），回滚后第三态原样保留 |
+
+### 演示数据与示例
+
+`sql/02_demo_registry_report.sql` 在源库新增零行的 `dw_registry`（登记）/
+`dw_report`（报告）表，结构严格落在上述支持范围内。两版请求示例：
+
+- `examples/request_registry_report_old.json`
+- `examples/request_registry_report_new.json`
+
+启动后在 http://localhost:8000/docs 的 `POST /migrations` 直接试发，
+响应中的 `script` 即为可在目标库执行（`psql -v ON_ERROR_STOP=1`）的迁移脚本。
+
 ## 循环引用检验表示例
 
 `sql/00_demo_source_schema.sql` 构成如下循环图（全部整数列、零行）：
@@ -137,8 +200,10 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/
 
 ```
 app/            FastAPI + 内省 + z3 求解 + SQL 渲染 + 隔离库验证
-sql/            循环引用检验表源结构、源库初始化（只读角色）
-examples/       循环四表、无解冲突、闭包扩展三类请求示例
-tests/          34 个单元/集成/端到端测试（真实 PostgreSQL）
+  migration.py  增量迁移：结构校验、按主键差异计算、单事务迁移脚本渲染
+  migverify.py  迁移脚本三场景隔离空库验证（升级/已是新版/两版都不匹配）
+sql/            循环引用检验表源结构、登记/报告表演示表、源库初始化（只读角色）
+examples/       循环四表、无解冲突、闭包扩展、登记/报告新旧两版请求示例
+tests/          51 个单元/集成/端到端测试（真实 PostgreSQL）
 docker-compose.yml / Dockerfile / requirements.txt
 ```
